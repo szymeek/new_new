@@ -2,8 +2,12 @@
 """
 Global key listener that triggers a screenshot of the MTA client area
 upon Alt, Q, or E keypress. Thread-safe MSS implementation.
-Screenshots are named in 4-screenshot cycles: Alt=1, Q/E=2, Q/E=3, Q/E=4
+Saves only first 3 screenshots as 26x26 crops at specific coordinates.
+Screenshots: Alt=1, Q/E=2, Q/E=3 (position 4 is skipped)
 Press ESC to quit.
+
+to run:
+python -m main_logic.hotkey_capture --title "MTA: San Andreas" --delay-ms 500 --save-dir screenshots
 """
 
 from __future__ import annotations
@@ -59,9 +63,17 @@ class KeypressCapture:
         self._counter = 0
         self._running = True
 
-        # Cycle tracking: Alt=1, Q/E=2, Q/E=3, Q/E=4, then reset on next Alt
-        self._cycle_position = 0  # 0 = waiting for alt, 1-4 = positions in cycle
+        # Cycle tracking: Alt=1, Q/E=2, Q/E=3, position 4 is skipped
+        self._cycle_position = 0
         self._total_screenshots = 0
+
+        # Crop coordinates for each position (26x26 crops)
+        self._crop_coords = {
+            1: (39, 943),   # Alt position
+            2: (97, 943),   # First Q/E position  
+            3: (155, 943),  # Second Q/E position
+        }
+        self._crop_size = 26
 
         self._last_ts = {"alt": 0.0, "q": 0.0, "e": 0.0}
         self._debounce_s = 0.08
@@ -70,16 +82,16 @@ class KeypressCapture:
         return int(time.time() * 1000)
 
     def _get_cycle_position(self, keyname: str) -> int:
-        """Get the position number (1-4) for this keypress in the current cycle"""
+        """Get the position number (1-3) for this keypress in the current cycle"""
         with self._lock:
             if keyname == "alt":
                 # Alt always starts a new cycle at position 1
                 self._cycle_position = 1
             else:
-                # Q/E increment position, but wrap after 4
+                # Q/E increment position, but only save positions 1-3
                 self._cycle_position += 1
                 if self._cycle_position > 4:
-                    self._cycle_position = 2  # If no Alt, treat as position 2
+                    self._cycle_position = 2  # Reset to 2 if no Alt pressed
             
             return self._cycle_position
 
@@ -100,6 +112,23 @@ class KeypressCapture:
         except Exception as e:
             print(f"[warn] capture failed: {e}")
             return None
+
+    def _crop_frame(self, frame: np.ndarray, cycle_pos: int) -> Optional[np.ndarray]:
+        """Crop frame to 26x26 at specified coordinates"""
+        if cycle_pos not in self._crop_coords:
+            return None
+        
+        x, y = self._crop_coords[cycle_pos]
+        size = self._crop_size
+        
+        # Check bounds
+        if (y + size > frame.shape[0]) or (x + size > frame.shape[1]):
+            print(f"[warn] crop coordinates ({x}, {y}) + {size}x{size} exceed frame bounds {frame.shape}")
+            return None
+        
+        # Crop using numpy slicing: frame[y:y+height, x:x+width]
+        cropped = frame[y:y+size, x:x+size]
+        return cropped
 
     def _save_frame(self, frame: np.ndarray, keyname: str, cycle_pos: int) -> str:
         ts = self._now_ms()
@@ -126,13 +155,26 @@ class KeypressCapture:
         # Get cycle position before capture
         cycle_pos = self._get_cycle_position(keyname)
         
+        # Skip position 4 - don't save anything
+        if cycle_pos == 4:
+            print(f"[skip] {keyname} (pos {cycle_pos}) - not saving position 4")
+            return
+        
+        # Capture full frame
         frame = self._safe_grab()
         if frame is None:
             print(f"[warn] no frame for key={keyname}")
             return
         
-        out = self._save_frame(frame, keyname, cycle_pos)
-        print(f"[ok] {keyname} (pos {cycle_pos}) -> {out}")
+        # Crop to 26x26 at specified coordinates
+        cropped = self._crop_frame(frame, cycle_pos)
+        if cropped is None:
+            print(f"[warn] crop failed for key={keyname} at position {cycle_pos}")
+            return
+        
+        out = self._save_frame(cropped, keyname, cycle_pos)
+        crop_x, crop_y = self._crop_coords[cycle_pos]
+        print(f"[ok] {keyname} (pos {cycle_pos}) -> {out} [cropped {self._crop_size}x{self._crop_size} from {crop_x},{crop_y}]")
 
     def on_press(self, key) -> None:
         try:
@@ -148,14 +190,20 @@ class KeypressCapture:
                 elif key == keyboard.Key.esc:
                     print("[info] ESC detected; exiting.")
                     self._running = False
-                    # Do not return anything; just set _running to False
+                    raise StopIteration
         except Exception as exc:
             print(f"[err] on_press error: {exc}")
-        # Always return None implicitly
+        # Always return None
+        return None
 
     def run(self) -> None:
         print("[info] Listening for Alt / Q / E ... (ESC to quit)")
-        print("[info] Cycle: Alt=1, Q/E=2, Q/E=3, Q/E=4, then repeats")
+        print("[info] Saving only positions 1-3 as 26x26 crops:")
+        print(f"[info] Position 1 (Alt): crop at {self._crop_coords[1]}")
+        print(f"[info] Position 2 (Q/E): crop at {self._crop_coords[2]}")
+        print(f"[info] Position 3 (Q/E): crop at {self._crop_coords[3]}")
+        print("[info] Position 4 will be skipped")
+        
         with keyboard.Listener(on_press=self.on_press) as listener:
             while self._running:
                 time.sleep(0.05)
