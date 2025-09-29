@@ -4,6 +4,11 @@ Global key listener that triggers a screenshot of the MTA client area
 upon Alt, Q, or E keypress. Thread-safe MSS implementation.
 Screenshots are named in 4-screenshot cycles: Alt=1, Q/E=2, Q/E=3, Q/E=4
 Press ESC to quit.
+
+usage
+python -m main_logic.hotkey_capture --title "MTA: San Andreas" --delay-ms 30 --save-dir screenshots
+
+
 """
 
 from __future__ import annotations
